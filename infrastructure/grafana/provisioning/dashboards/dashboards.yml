@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: DevOpsPilot
+    orgId: 1
+    folder: DevOpsPilot
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

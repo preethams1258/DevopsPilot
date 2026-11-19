@@ -1,0 +1,6 @@
+FROM python:3.12-slim
+WORKDIR /app
+RUN pip install --no-cache-dir fastapi uvicorn[standard] sqlalchemy psycopg[binary] prometheus-client opentelemetry-distro opentelemetry-exporter-otlp opentelemetry-instrumentation-fastapi opentelemetry-instrumentation-sqlalchemy
+COPY main.py .
+EXPOSE 8001
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]

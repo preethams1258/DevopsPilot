@@ -1,0 +1,13 @@
+global:
+  resolve_timeout: 2m
+route:
+  receiver: devopspilot-webhook
+  group_by: [alertname, job]
+  group_wait: 5s
+  group_interval: 30s
+  repeat_interval: 2h
+receivers:
+  - name: devopspilot-webhook
+    webhook_configs:
+      - url: http://devopspilot-api:8000/api/alerts/prometheus
+        send_resolved: true

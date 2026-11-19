@@ -1,0 +1,14 @@
+{
+  "title": "DevOpsPilot - Demo Operations",
+  "uid": "devopspilot-demo",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"id": 1, "title": "Monitored API availability", "type": "timeseries", "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "up{job=\"monitored-api\"}", "legendFormat": "API up", "refId": "A"}]},
+    {"id": 2, "title": "HTTP request rate", "type": "timeseries", "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(rate(http_requests_total{job=\"monitored-api\"}[5m]))", "legendFormat": "requests/sec", "refId": "A"}]},
+    {"id": 3, "title": "Container CPU", "type": "timeseries", "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "rate(container_cpu_usage_seconds_total{name=~\".*monitored-api.*\"}[5m])", "legendFormat": "CPU cores", "refId": "A"}]},
+    {"id": 4, "title": "Monitored API logs", "type": "logs", "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8}, "datasource": {"type": "loki", "uid": "loki"}, "targets": [{"expr": "{container=~\".*monitored-api.*\"}", "refId": "A"}]}
+  ]
+}

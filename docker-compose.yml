@@ -1,0 +1,268 @@
+name: devopspilot
+services:
+  platform-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: devopspilot
+      POSTGRES_USER: devopspilot
+      POSTGRES_PASSWORD: ${PLATFORM_DB_PASSWORD:-change_me_platform_db}
+    volumes: [platform-db-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devopspilot -d devopspilot"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    networks: [platform]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis-data:/data]
+    networks: [platform]
+    restart: unless-stopped
+
+  devopspilot-api:
+    build: ./backend
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      JWT_SECRET: ${JWT_SECRET:-change_me_jwt_secret_at_least_32_characters}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      ALLOWED_DEMO_CONTAINERS: ${ALLOWED_DEMO_CONTAINERS:-demo-postgres,cpu-stressor,memory-stressor}
+      DATABASE_URL: postgresql+psycopg://devopspilot:${PLATFORM_DB_PASSWORD:-change_me_platform_db}@platform-postgres:5432/devopspilot
+      REDIS_URL: redis://redis:6379/0
+      PROMETHEUS_URL: http://prometheus:9090
+      LOKI_URL: http://loki:3100
+      JAEGER_URL: http://jaeger:16686
+      MONITORED_API_URL: http://monitored-api:8001
+      CONTROLLER_URL: http://infrastructure-controller:8002
+      CONTROLLER_TOKEN: ${CONTROLLER_TOKEN:-change_me_controller_token}
+    depends_on:
+      platform-postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+      infrastructure-controller: {condition: service_healthy}
+    ports: ["8000:8000"]
+    networks: [platform, observability, demo]
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    environment:
+      VITE_API_URL: http://localhost:8000
+    ports: ["5173:5173"]
+    depends_on: [devopspilot-api]
+    networks: [platform]
+    restart: unless-stopped
+
+  demo-postgres:
+    container_name: demo-postgres
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: shop
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: ${DEMO_DB_PASSWORD:-demo_password}
+    volumes: [demo-db-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d shop"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [demo]
+    restart: unless-stopped
+
+  monitored-api:
+    container_name: monitored-api
+    build: ./monitored-app/backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://demo:${DEMO_DB_PASSWORD:-demo_password}@demo-postgres:5432/shop
+      OTEL_SERVICE_NAME: monitored-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+    depends_on:
+      demo-postgres: {condition: service_healthy}
+    ports: ["8001:8001"]
+    networks: [demo, observability]
+    restart: unless-stopped
+
+  demo-shop:
+    image: nginx:1.27-alpine
+    volumes: [./monitored-app/frontend:/usr/share/nginx/html:ro]
+    ports: ["8080:80"]
+    networks: [demo]
+    restart: unless-stopped
+
+  cpu-stressor:
+    container_name: cpu-stressor
+    image: python:3.12-slim
+    command: ["sh", "-c", "sleep infinity"]
+    volumes: [./backend/app/simulator/stress.py:/app/stress.py:ro]
+    mem_limit: 128m
+    cpus: 0.50
+    networks: [demo]
+    restart: unless-stopped
+
+  memory-stressor:
+    container_name: memory-stressor
+    image: python:3.12-slim
+    command: ["sh", "-c", "sleep infinity"]
+    volumes: [./backend/app/simulator/stress.py:/app/stress.py:ro]
+    mem_limit: 96m
+    cpus: 0.25
+    networks: [demo]
+    restart: unless-stopped
+
+  infrastructure-controller:
+    build: ./controller-service
+    environment:
+      DOCKER_BASE_URL: tcp://docker-proxy:2375
+      CONTROLLER_TOKEN: ${CONTROLLER_TOKEN:-change_me_controller_token}
+      ALLOWED_DEMO_CONTAINERS: ${ALLOWED_DEMO_CONTAINERS:-demo-postgres,cpu-stressor,memory-stressor}
+    depends_on: [docker-proxy]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [platform, demo, control-plane]
+    restart: unless-stopped
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3
+    environment:
+      CONTAINERS: 1
+      POST: 1
+      INFO: 1
+      PING: 1
+      VERSION: 1
+      IMAGES: 0
+      NETWORKS: 0
+      VOLUMES: 0
+      EXEC: 1
+      AUTH: 0
+      BUILD: 0
+      COMMIT: 0
+      SECRETS: 0
+      SWARM: 0
+    volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
+    networks: [control-plane]
+    restart: unless-stopped
+
+  docker-proxy-readonly:
+    image: tecnativa/docker-socket-proxy:0.3
+    environment:
+    
+      CONTAINERS: 1
+      POST: 0
+      INFO: 1
+      PING: 1
+      VERSION: 1
+      EXEC: 0
+      IMAGES: 0
+      NETWORKS: 1
+      VOLUMES: 0
+      AUTH: 0
+      BUILD: 0
+      COMMIT: 0
+      SECRETS: 0
+      SWARM: 0
+    volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
+    networks: [log-control-plane]
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.2
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks: [observability]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infrastructure/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    ports: ["9090:9090"]
+    networks: [observability]
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    volumes: [./infrastructure/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro]
+    ports: ["9093:9093"]
+    networks: [observability]
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.2.1
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes: [./infrastructure/loki/loki-config.yml:/etc/loki/local-config.yaml:ro, loki-data:/loki]
+    ports: ["3100:3100"]
+    networks: [observability]
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.2.1
+    command: ["-config.file=/etc/promtail/config.yml"]
+    volumes:
+      - ./infrastructure/promtail.yml:/etc/promtail/config.yml:ro
+      - promtail-data:/tmp
+    depends_on: [docker-proxy-readonly]
+    networks: [observability, log-control-plane]
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports: ["16686:16686", "4317:4317", "4318:4318"]
+    networks: [observability]
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes: [./infrastructure/otel/collector.yml:/etc/otelcol-contrib/config.yaml:ro]
+    depends_on: [jaeger]
+    networks: [observability]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-change_me_grafana}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    networks: [observability]
+    restart: unless-stopped
+
+volumes:
+  platform-db-data:
+  demo-db-data:
+  redis-data:
+  prometheus-data:
+  loki-data:
+  promtail-data:
+  grafana-data:
+networks:
+  platform:
+  demo:
+  observability:
+  control-plane:
+    internal: true
+  log-control-plane:
+    internal: true

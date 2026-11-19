@@ -1,0 +1,16 @@
+groups:
+  - name: demo-app-alerts
+    rules:
+      - alert: DemoAPIDown
+        expr: up{job="monitored-api"} == 0
+        for: 20s
+        labels: {severity: critical}
+        annotations:
+          summary: Monitored demo API is down
+          description: Prometheus cannot scrape the monitored API.
+      - alert: DemoAPIHighErrorRate
+        expr: sum(rate(http_requests_total{job="monitored-api",status=~"5.."}[2m])) > 0.1
+        for: 30s
+        labels: {severity: warning}
+        annotations:
+          summary: Elevated 5xx responses on demo API
